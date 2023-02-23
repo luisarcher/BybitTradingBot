@@ -1,0 +1,15 @@
+{
+    "user_data" : {
+        "api_key" : "BYBIT_API_KEY",
+        "api_secret" : "BYBIT_API_SECRET",
+        "collateral" : "USDT"
+    },
+
+    "tickers" : {
+        "MATIC" : {
+            "wallet_perc" : 20,
+            "long_leverage" : 6,
+            "short_leverage" : 6
+        }
+    }
+}

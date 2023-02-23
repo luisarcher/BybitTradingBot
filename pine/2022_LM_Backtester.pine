@@ -1,0 +1,305 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © lm2511
+//@version=5
+
+strategyTitle = '2022 LM Backtester'
+strategyOverlay = true
+
+strategy(title=strategyTitle, overlay=strategyOverlay, pyramiding=0, currency=currency.USD, default_qty_type=strategy.percent_of_equity, 
+     default_qty_value=50, commission_value=0.025, commission_type=strategy.commission.percent, initial_capital=100, process_orders_on_close=true)
+
+
+
+// |———————————————————————————————————————————————————————————————————————————|
+// |————————————  Constants  ——————————————————————————————————————————————————|
+
+string GROUP_BASE_SETTINGS = "Config —— BASE SETTINGS"
+
+// --- Risk Management
+string SLTP = "StopLoss/TakeProfit"
+string TSL  = "Trailing Stop"
+string ATR  = "ATR"
+string BKOUT= "BreakoutChannel"
+string REV_SIGNAL = "None (Indicator stops)"
+
+
+
+// |———————————————————————————————————————————————————————————————————————————|
+// |————————————  Inputs     ——————————————————————————————————————————————————|
+
+// --- External Indicator
+
+TT_EXTERNAL = 'Select input from an external indicator. The indicator should be added to the same chart with this strategy and the desired value that will take part in the condition should be ploted in the chart.'
+TT_EXTERNAL_LISTEN_CLOSE = 'When set, this strategy will close positions when indicators instruct to do so.'
+externalInput = input.source(defval = close, title = 'External Input', tooltip=TT_EXTERNAL, group=GROUP_BASE_SETTINGS)
+i_enable__indicatorCloseEvents = input.bool(true, title='Listen to Indicator Close signals', group=GROUP_BASE_SETTINGS, tooltip=TT_EXTERNAL_LISTEN_CLOSE)
+
+// --- Date range picker
+
+i_startTime = input.time(   defval=timestamp('01 Jan 2022 00:00 +0000'), title='Start Time',    group=GROUP_BASE_SETTINGS)
+i_endTime   = input.time(   defval=timestamp('31 Dec 2024 23:59 +0000'), title='End Time',      group=GROUP_BASE_SETTINGS)
+isInDateRange = time >= i_startTime and time <= i_endTime
+
+
+// --- Heikin Ashi Candles
+
+// string TT_HA_CANDLES = "When set, indicator calculations will use Heikin Ashi Candles OHLC"
+// i_candles_ha = input.bool(false, title='Calc using Heikin-Ashi candles', group=GROUP_BASE_SETTINGS, tooltip=TT_HA_CANDLES)
+// chart_open  = i_candles_ha ? request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, open)  : open
+// chart_high  = i_candles_ha ? request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, high)  : high
+// chart_low   = i_candles_ha ? request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, low)   : low
+// chart_close = i_candles_ha ? request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, close) : close
+ 
+
+// ————————   Risk management
+
+string GROUP_RISK = 'CONFIG ——————— EXIT (Any of)'
+string TT_RISK_MANAGEMENT = "Select a Generic Risk Management strategy to exit a trade. Once selected, it will be applied on top of indicator filters."
+i_opt__riskManagement = input.string(title="Risk Management", defval=ATR, 
+                         options=[SLTP, TSL, ATR, BKOUT, REV_SIGNAL], group=GROUP_RISK, tooltip=TT_RISK_MANAGEMENT)
+
+// ---  SLTP
+string GROUP_RISK_SLTP_TSL  = 'CONFIG ———— EXIT ———— (if) SLTP/TSL'
+string TT_STOP_LOSS_TSL     = "Stop Loss values will be used when Trailing Stop Loss is Selected, thus, Take profit values are discarded."
+// ——  Long SL TP
+i_val__longStopLoss     = input.float(defval=3, title='Long Stoploss % | TSL%', minval=0.05, group=GROUP_RISK_SLTP_TSL, step=0.025, tooltip=TT_STOP_LOSS_TSL)
+longStopLossPercentage  = close * (i_val__longStopLoss / 100) / syminfo.mintick
+i_val__longTakeProfit   = input.float(defval=3, title='Long Take Profit %', minval=0.1, group=GROUP_RISK_SLTP_TSL, step=0.025)
+longTakeprofitPercentage = close * (i_val__longTakeProfit / 100) / syminfo.mintick
+// ——  Short SL (and TSL) / TP
+i_val__shortStopLoss    = input.float(defval=3, title='Short Stoploss % | TSL%', minval=0.05, group=GROUP_RISK_SLTP_TSL, step=0.025, tooltip=TT_STOP_LOSS_TSL)
+shortStopLossPercentage = close * (i_val__shortStopLoss / 100) / syminfo.mintick
+i_val__shortTakeProfit  = input.float(defval=3, title='Short Take Profit %', minval=0.1, group=GROUP_RISK_SLTP_TSL, step=0.025)
+shortTakeProfitPercentage = close * (i_val__shortTakeProfit / 100) / syminfo.mintick
+
+// ——  ATR Trailing stop
+string GROUP_RISK_ATR = 'CONFIG ———— EXIT ———— (if) ATR'
+i_ATRPeriod     = input.int(21, "Exit - ATR Period", tooltip = "This is the number of bars back that the script uses to calculate the Average True Range.", group=GROUP_RISK_ATR)
+i_ATRMultiplier = input.float(2.8, "Exit - ATR Multiplier", step=.1, tooltip = "This is the multiple of the ATR average that will function as the trail.",  group=GROUP_RISK_ATR)
+
+// ——  Breakout Channel
+string GROUP_RISK_BKOUT         = 'CONFIG ———— EXIT ———— (if) BrakeOut'
+string TT_BREAKOUT_CHANNEL_LEN  = "This is the number of bars back that the script uses to calculate the Range of Breakout channel."
+//i_breakout_channel  = input.int(12, "Exit - Bkout Chann. Len", tooltip = TT_BREAKOUT_CHANNEL_LEN, group=GROUP_RISK_BKOUT)
+//i_enable_r2rRatio   = input.bool(false, 'TO DO - Use RiskToReward Ratio ', group=GROUP_RISK_BKOUT)
+//i_val_r2rRatio      = input.float(defval=1, title='Risk to Reward %', minval=0.25, group=GROUP_RISK_BKOUT, step=0.25)
+
+i_brakeoutChannelLength = input.int(4, "Brakeout Ch. Length", tooltip = TT_BREAKOUT_CHANNEL_LEN, group=GROUP_RISK_BKOUT)
+i_brakeoutChannelR2R    = input.float(2.25, "Brakeout Ch. R2R Ratio", step=0.25)
+
+// --- Additional Settings on External Input
+
+GRP_EXTERNAL_IND = '🔨 External Indicator Advanced settings'
+startLongDealOperator   = input.string(defval = '/10',  title='Start Long Deal when input', options=['==', '<', '>', '<=', '>=', '!=', 'crossover', 'crossunder', 'mod2', 'mod3', 'mod10', '/10', 'noop'], inline = 'Start Long Deal', group =GRP_EXTERNAL_IND)
+startLongDealValue      = input.float(defval = 2.0,     title = '', tooltip = 'Conditon to start a Long Deal based on external input.', inline = 'Start Long Deal', group=GRP_EXTERNAL_IND)
+endLongDealOperator     = input.string(defval = '/10',  title = 'End Long Deal when input', options = ['==', '<', '>', '<=', '>=', '!=', 'crossover', 'crossunder', 'mod2', 'mod3', 'mod10', '/10', 'noop'], inline = 'End Long Deal', group=GRP_EXTERNAL_IND)
+endLongDealValue        = input.float(defval = 1.0,     title = '', tooltip = 'Conditon to end a Long Deal based on external input.', inline = 'End Long Deal', group=GRP_EXTERNAL_IND)
+startShortDealOperator  = input.string(defval='mod10',  title = 'Start Short Deal when input', options = ['==', '<', '>', '<=', '>=', '!=', 'crossover', 'crossunder', 'mod2', 'mod3', 'mod10', '/10', 'noop'], inline = 'Start Short Deal', group=GRP_EXTERNAL_IND)
+startShortDealValue     = input.float(defval = 2.0,     title = '', tooltip = 'Conditon to start a Short Deal based on external input.', inline = 'Start Short Deal', group=GRP_EXTERNAL_IND)
+endShortDealOperator    = input.string(defval='mod10',  title = 'End Short Deal when input', options = ['==', '<', '>', '<=', '>=', '!=', 'crossover', 'crossunder', 'mod2', 'mod3', 'mod10', '/10', 'noop'], inline = 'End Short Deal', group=GRP_EXTERNAL_IND)
+endShortDealValue       = input.float(defval = 1.0,     title = '', tooltip = 'Conditon to end a Short Deal based on external input.', inline = 'End Short Deal', group=GRP_EXTERNAL_IND)
+
+
+
+// |———————————————————————————————————————————————————————————————————————————|
+// |————————————  Functions  ——————————————————————————————————————————————————|
+
+f_eval_cond(float input, simple string operator, float value, simple bool defval = true) =>
+    switch operator
+        '==' => input == value
+        '<' => input < value
+        '>' => input > value
+        '<=' => input <= value
+        '>=' => input >= value
+        '!=' => input != value
+        'crossover' => ta.crossover(input, value)
+        'crossunder' => ta.crossunder(input, value)
+        'mod2' => input % 2 == value
+        'mod3' => input % 3 == value
+        'mod10' => input % 10 == value
+        '/10' => int(input / 10) == value
+        'noop' => defval
+        => na
+
+
+
+// |———————————————————————————————————————————————————————————————————————————|
+// |————————————  Calculations  ———————————————————————————————————————————————|
+
+// ---  Reversal Candle
+
+TT_REV_CANDLE = "Only enter a trade if the current candle close is above previous low or below previous high, for long and short positions."
+i_wait_rev_candle = input.bool(false, title='Wait for reversal candle', tooltip=TT_REV_CANDLE)
+sig_rev_candle_buy = i_wait_rev_candle == false? true : (close > low[1])
+sig_rev_candle_sell = i_wait_rev_candle == false? true : (close < high[1])
+
+
+// ---  Uninterrupted trades
+TT_UNINTERRUPT_TRADE = "When this checkbox is set, any trade can only terminate when its stop signal is set. Meaning a Long trade cannot be interrupted by a short signal and vice-versa."
+i_enableIntTrade = input.bool(false, title='Uninterrupted trades', tooltip=TT_UNINTERRUPT_TRADE)
+sig_wait_trade = i_enableIntTrade == false? true : strategy.position_size == 0
+
+bool startLongDeal  = f_eval_cond(externalInput, startLongDealOperator, startLongDealValue, false)
+bool endLongDeal    = f_eval_cond(externalInput, endLongDealOperator,   endLongDealValue, true)
+bool startShortDeal = f_eval_cond(externalInput, startShortDealOperator, startShortDealValue, false)
+bool endShortDeal   = f_eval_cond(externalInput, endShortDealOperator,  endShortDealValue, true)
+
+
+// |———————————————————————————————————————————————————————————————————————————|
+// |————————————  Strategy - Entry  ———————————————————————————————————————————|
+
+masterLongSignal = startLongDeal and isInDateRange and sig_rev_candle_buy and sig_wait_trade
+masterShortSignal = startShortDeal and isInDateRange and sig_rev_candle_sell and sig_wait_trade
+
+if (masterLongSignal)
+    strategy.entry("B", strategy.long)
+
+if (masterShortSignal)
+    strategy.entry("S", strategy.short)
+
+
+// |———————————————————————————————————————————————————————————————————————————|
+// |————————————  Strategy - Exit  ————————————————————————————————————————————|
+
+// Shared variables
+inAPosition = strategy.position_size != 0
+//float entryPrice = inAPosition[1] ? strategy.opentrades.entry_price(strategy.opentrades - 1) : na
+float entryPrice = inAPosition ? strategy.position_avg_price : close
+
+// ————— Exit trade using defined Stop-Loss and Take-Profit
+if i_opt__riskManagement == SLTP
+    strategy.exit('Long SL/TP',  from_entry='B', loss=longStopLossPercentage,   profit=longTakeprofitPercentage,    comment="close-SLTP")
+    strategy.exit('Short SL/TP', from_entry='S', loss=shortStopLossPercentage,  profit=shortTakeProfitPercentage,   comment="close-SLTP")
+
+// ————— Exit trade using TSL Risk management
+if i_opt__riskManagement == TSL
+    longTrailPerc = i_val__longStopLoss * 0.01
+    shortTrailPerc = i_val__shortStopLoss * 0.01
+    longStopPrice = 0.0
+    shortStopPrice = 0.0
+    longStopPrice := if strategy.position_size > 0
+        stopValue = close * (1 - longTrailPerc)
+        math.max(stopValue, longStopPrice[1])
+    else
+        0
+    shortStopPrice := if strategy.position_size < 0
+        stopValue = close * (1 + shortTrailPerc)
+        math.min(stopValue, shortStopPrice[1])
+    else
+        999999
+    //TSL
+    exitLong = low >= longStopPrice
+    exitShort = high >= shortStopPrice
+    strategy.exit('CS', from_entry='S', stop=shortStopPrice, comment="close-TSL")
+    strategy.exit('CB', from_entry='B', stop=longStopPrice, comment="close-TSL")
+
+
+// ————— Exit trade using ATR Risk management
+
+var ATRTrailingStop1 = 0.0
+var ATRTrailingStop2 = 0.0
+var ATRPosition = 0.0
+if i_opt__riskManagement == ATR
+    _ATR = ta.atr(i_ATRPeriod)
+    Stop = i_ATRMultiplier*_ATR
+    
+    isLong = close>ATRTrailingStop1[1] and close[1]>ATRTrailingStop1[1]
+    isShort = close<ATRTrailingStop2[1] and close[1]<ATRTrailingStop2[1]
+    ATRTrailingStop2 := if isShort
+        math.min(ATRTrailingStop2[1], close+Stop)
+    else 
+        close+Stop
+    ATRTrailingStop1 := if isLong
+        math.max(ATRTrailingStop1[1], close-Stop)
+    else 
+        close-Stop
+    
+    strategy.exit('CS', from_entry='S', stop=ATRTrailingStop2, comment="closeATR_S")
+    strategy.exit('CB', from_entry='B', stop=ATRTrailingStop1, comment="closeATR_L")
+
+ATRPosition := if close[1]<ATRTrailingStop2[1] and close>ATRTrailingStop2[1]
+    1
+else if close[1]>ATRTrailingStop1[1] and close<ATRTrailingStop1[1]
+    -1
+else
+    ATRPosition[1]
+
+
+// ————— Exit trade using Breakout channel
+
+var float breakoutChannelLowerLimitPrice = 0.0
+var float breakoutChannelUpperLimitPrice = 0.0
+var float breakoutChannelLongTP = 0.0
+var float breakoutChannelShortTP = 0.0
+_lowest = ta.lowest(i_brakeoutChannelLength)
+_highest = ta.highest(i_brakeoutChannelLength)
+
+if i_opt__riskManagement == BKOUT
+
+    breakoutChannelLowerLimitPrice := strategy.position_size > 0 ? breakoutChannelLowerLimitPrice[1] : _lowest //ta.lowest(i_brakeoutChannelLength)
+    breakoutChannelUpperLimitPrice := strategy.position_size < 0 ? breakoutChannelUpperLimitPrice[1] : _highest // ta.highest(i_brakeoutChannelLength)
+
+    //strategy.exit('CS', from_entry='S', stop=ta.highest(i_breakout_channel), comment="closeBO")
+    //strategy.exit('CB', from_entry='B', stop=ta.lowest(i_breakout_channel), comment="closeBO")
+    
+    if masterLongSignal
+        //strategy.close('S', comment="close-rev_cS")
+        //strategy.entry("L", strategy.long)
+        breakoutChannelLongTP := entryPrice + ((entryPrice - breakoutChannelLowerLimitPrice) * i_brakeoutChannelR2R)
+        strategy.exit('cB',  from_entry='L', stop=breakoutChannelLowerLimitPrice, limit=breakoutChannelLongTP, comment="close-BO_cL")
+        
+    if masterShortSignal
+        //strategy.close('L', comment="close-rev_cL")
+        //strategy.entry("S", strategy.short)
+        breakoutChannelShortTP := (entryPrice - ((breakoutChannelUpperLimitPrice - entryPrice) * i_brakeoutChannelR2R))
+        strategy.exit('cS', from_entry='S', stop=breakoutChannelUpperLimitPrice, limit=breakoutChannelShortTP, comment="close-BO_cS")
+
+
+if i_enable__indicatorCloseEvents
+    if endLongDeal
+        strategy.close('B', comment="close-ind_cL")
+    if endShortDeal
+        strategy.close('S', comment="close-ind_cS")
+
+//plot(ta.highest(7), color=color.lime,     linewidth=1, title="Top - Break Out Channel",          offset=2)
+//plot(ta.lowest(7), color=color.orange,   linewidth=1, title="Bottom - Break Out Channel",       offset=2)
+
+
+// |———————————————————————————————————————————————————————————————————————————|
+// |————————————  Plotting  ———————————————————————————————————————————————————|
+
+
+plot((i_opt__riskManagement == ATR ? ATRTrailingStop1 : na), color=(ATRPosition == 1 ?  color.green : color.gray),   linewidth=input(1, "Line Width"), title="ATR Stop Long")
+plot((i_opt__riskManagement == ATR ? ATRTrailingStop2 : na), color=(ATRPosition == -1 ? color.red: color.gray),     linewidth=input(1, "Line Width1"), title="ATR Stop Short")
+
+
+// --- Plot Brakeout channels
+
+plot(inAPosition ? entryPrice : na, 
+     title = 'Strategy Entry price', color = color.new(color.blue, 50), linewidth = 1, offset=1, style = plot.style_linebr)
+
+bool plotLongLimits = strategy.position_size > 0 and i_opt__riskManagement == BKOUT
+bool plotShortLimits = strategy.position_size < 0 and i_opt__riskManagement == BKOUT
+
+    //strategy.exit('Long SL/TP',  from_entry='B', loss=longStopLossPercentage,   profit=longTakeprofitPercentage,    comment="close-SLTP")
+    //strategy.exit('Short SL/TP', from_entry='S', loss=shortStopLossPercentage,  profit=shortTakeProfitPercentage,   comment="close-SLTP")
+
+plot(plotLongLimits ? breakoutChannelLowerLimitPrice : na,  color=color.maroon, linewidth=1, style = plot.style_linebr, offset=1, title="BreakOut Channel Long SL")
+plot(plotLongLimits ? breakoutChannelLongTP : na,           color=color.lime,   linewidth=1, style = plot.style_linebr, offset=1, title="BreakOut Channel Long TP")
+plot(plotShortLimits ? breakoutChannelUpperLimitPrice : na, color=color.maroon, linewidth=1, style = plot.style_linebr, offset=1, title="BreakOut Channel Short SL")
+plot(plotShortLimits ? breakoutChannelShortTP : na,         color=color.lime,   linewidth=1, style = plot.style_linebr, offset=1, title="BreakOut Channel Short TP")
+
+// --- Plot SLTP Limits
+
+bool plotSLTPLongLimits = strategy.position_size > 0 and i_opt__riskManagement == SLTP
+bool plotSLTPShortLimits = strategy.position_size < 0 and i_opt__riskManagement == SLTP
+
+    //strategy.exit('Long SL/TP',  from_entry='B', loss=longStopLossPercentage,   profit=longTakeprofitPercentage,    comment="close-SLTP")
+    //strategy.exit('Short SL/TP', from_entry='S', loss=shortStopLossPercentage,  profit=shortTakeProfitPercentage,   comment="close-SLTP")
+
+plot(plotSLTPLongLimits ? entryPrice - entryPrice * (i_val__longStopLoss / 100) : na,        color=color.maroon, linewidth=1, style = plot.style_linebr, offset=1, title="SLTP Long SL")
+plot(plotSLTPLongLimits ? entryPrice + entryPrice * (i_val__longTakeProfit / 100) : na,      color=color.lime,   linewidth=1, style = plot.style_linebr, offset=1, title="SLTP Long TP")
+plot(plotSLTPShortLimits ? entryPrice + entryPrice * (i_val__shortStopLoss / 100) : na,      color=color.maroon, linewidth=1, style = plot.style_linebr, offset=1, title="SLTP Short SL")
+plot(plotSLTPShortLimits ? entryPrice - entryPrice * (i_val__shortTakeProfit / 100) : na,    color=color.lime,   linewidth=1, style = plot.style_linebr, offset=1, title="SLTP Short TP")
+
+// Made with S2 by LM
